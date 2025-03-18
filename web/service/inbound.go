@@ -1,58 +1,117 @@
-package controller
+package service
 
 import (
-    "github.com/gin-gonic/gin"
-    "x-ui/web/service"
-    "x-ui/web/session"
+    "fmt"
+    "math/rand"
+    "strconv"
+    "time"
+    "x-ui/database"
+    "x-ui/database/model"
+    "x-ui/util/common"
+    "x-ui/util/random"
+    "x-ui/xray"
+
+    "gorm.io/gorm"
 )
 
-// BatchAddInboundForm 批量添加入站的表单结构体
-type BatchAddInboundForm struct {
-    StartPort int    `json:"startPort" form:"startPort"`
-    Count     int    `json:"count" form:"count"`
-    Username  string `json:"username" form:"username"`
-    Password  string `json:"password" form:"password"`
+// InboundService 入站服务结构体
+type InboundService struct {
+    db *gorm.DB
 }
 
-// InboundController 入站控制器结构体
-type InboundController struct {
-    inboundService *service.InboundService
-}
-
-// NewInboundController 创建一个新的入站控制器实例
-func NewInboundController(g *gin.RouterGroup) *InboundController {
-    a := &InboundController{
-        inboundService: service.NewInboundService(),
+// NewInboundService 创建一个新的入站服务实例
+func NewInboundService() *InboundService {
+    return &InboundService{
+        db: database.GetDB(),
     }
-    a.initRouter(g)
-    return a
 }
 
-// initRouter 初始化路由
-func (a *InboundController) initRouter(g *gin.RouterGroup) {
-    g = g.Group("/inbound")
-    g.POST("/batchAdd", a.batchAddInbounds)
-    g.GET("/list", a.getInbounds)
-    // 其他原有路由...
-}
-
-// batchAddInbounds 处理批量添加入站的请求
-func (a *InboundController) batchAddInbounds(c *gin.Context) {
-    form := &BatchAddInboundForm{}
-    // 绑定请求参数到表单结构体
-    err := c.ShouldBind(form)
-    if err != nil {
-        session.JsonMsg(c, "批量添加入站", err)
-        return
+// BatchAddInbounds 批量添加入站的核心方法
+func (s *InboundService) BatchAddInbounds(startPort, count int, username, password string) error {
+    inbounds := make([]*model.Inbound, 0, count)
+    for i := 0; i < count; i++ {
+        port := startPort + i
+        // 如果用户名未提供，则随机生成
+        if username == "" {
+            username = random.Seq(8)
+        }
+        // 如果密码未提供，则随机生成
+        if password == "" {
+            password = random.Seq(8)
+        }
+        // 构建入站配置的 settings 字段
+        settings := fmt.Sprintf(`{
+            "accounts": [
+                {
+                    "user": "%s",
+                    "pass": "%s"
+                }
+            ]
+        }`, username, password)
+        // 创建入站配置实例
+        inbound := &model.Inbound{
+            Up:           0,
+            Down:         0,
+            Total:        0,
+            Remark:       fmt.Sprintf("批量生成 - 端口 %d", port),
+            Enable:       true,
+            Listen:       "127.0.0.1",
+            Port:         port,
+            Protocol:     model.Http, // 可根据需要修改协议
+            Settings:     settings,
+            StreamSettings: "",
+            Sniffing:     "",
+        }
+        inbounds = append(inbounds, inbound)
     }
-    // 调用服务层的批量添加入站方法
-    err = a.inboundService.BatchAddInbounds(form.StartPort, form.Count, form.Username, form.Password)
-    session.JsonMsg(c, "批量添加入站", err)
+
+    // 检查端口是否已存在
+    for _, inbound := range inbounds {
+        exist, err := s.checkPortExist(inbound.Port, 0)
+        if err != nil {
+            return err
+        }
+        if exist {
+            return common.NewError("端口已存在:", inbound.Port)
+        }
+    }
+
+    // 开启数据库事务
+    tx := s.db.Begin()
+    var err error
+    defer func() {
+        if err == nil {
+            tx.Commit()
+        } else {
+            tx.Rollback()
+        }
+    }()
+
+    // 批量保存入站配置到数据库
+    for _, inbound := range inbounds {
+        err = tx.Save(inbound).Error
+        if err != nil {
+            return err
+        }
+    }
+
+    return nil
 }
 
-// getInbounds 处理获取入站列表的请求
-func (a *InboundController) getInbounds(c *gin.Context) {
-    // 调用服务层的获取入站列表方法
-    inbounds, err := a.inboundService.GetInbounds()
-    session.JsonData(c, "获取入站列表", inbounds, err)
+// checkPortExist 检查端口是否已存在
+func (s *InboundService) checkPortExist(port int, ignoreID int) (bool, error) {
+    var count int64
+    query := s.db.Model(&model.Inbound{}).Where("port = ?", port)
+    if ignoreID > 0 {
+        query = query.Where("id != ?", ignoreID)
+    }
+    err := query.Count(&count).Error
+    return count > 0, err
+}
+
+// GetInbounds 获取所有入站配置
+func (s *InboundService) GetInbounds() ([]*model.Inbound, error) {
+    var inbounds []*model.Inbound
+    err := s.db.Find(&inbounds).Error
+    return inbounds, err
 }
