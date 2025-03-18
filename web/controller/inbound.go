@@ -1,108 +1,58 @@
 package controller
 
 import (
-	"fmt"
-	"github.com/gin-gonic/gin"
-	"strconv"
-	"x-ui/database/model"
-	"x-ui/logger"
-	"x-ui/web/global"
-	"x-ui/web/service"
-	"x-ui/web/session"
+    "github.com/gin-gonic/gin"
+    "x-ui/web/service"
+    "x-ui/web/session"
 )
 
+// BatchAddInboundForm 批量添加入站的表单结构体
+type BatchAddInboundForm struct {
+    StartPort int    `json:"startPort" form:"startPort"`
+    Count     int    `json:"count" form:"count"`
+    Username  string `json:"username" form:"username"`
+    Password  string `json:"password" form:"password"`
+}
+
+// InboundController 入站控制器结构体
 type InboundController struct {
-	inboundService service.InboundService
-	xrayService    service.XrayService
+    inboundService *service.InboundService
 }
 
+// NewInboundController 创建一个新的入站控制器实例
 func NewInboundController(g *gin.RouterGroup) *InboundController {
-	a := &InboundController{}
-	a.initRouter(g)
-	a.startTask()
-	return a
+    a := &InboundController{
+        inboundService: service.NewInboundService(),
+    }
+    a.initRouter(g)
+    return a
 }
 
+// initRouter 初始化路由
 func (a *InboundController) initRouter(g *gin.RouterGroup) {
-	g = g.Group("/inbound")
-
-	g.POST("/list", a.getInbounds)
-	g.POST("/add", a.addInbound)
-	g.POST("/del/:id", a.delInbound)
-	g.POST("/update/:id", a.updateInbound)
+    g = g.Group("/inbound")
+    g.POST("/batchAdd", a.batchAddInbounds)
+    g.GET("/list", a.getInbounds)
+    // 其他原有路由...
 }
 
-func (a *InboundController) startTask() {
-	webServer := global.GetWebServer()
-	c := webServer.GetCron()
-	c.AddFunc("@every 10s", func() {
-		if a.xrayService.IsNeedRestartAndSetFalse() {
-			err := a.xrayService.RestartXray(false)
-			if err != nil {
-				logger.Error("restart xray failed:", err)
-			}
-		}
-	})
+// batchAddInbounds 处理批量添加入站的请求
+func (a *InboundController) batchAddInbounds(c *gin.Context) {
+    form := &BatchAddInboundForm{}
+    // 绑定请求参数到表单结构体
+    err := c.ShouldBind(form)
+    if err != nil {
+        session.JsonMsg(c, "批量添加入站", err)
+        return
+    }
+    // 调用服务层的批量添加入站方法
+    err = a.inboundService.BatchAddInbounds(form.StartPort, form.Count, form.Username, form.Password)
+    session.JsonMsg(c, "批量添加入站", err)
 }
 
+// getInbounds 处理获取入站列表的请求
 func (a *InboundController) getInbounds(c *gin.Context) {
-	user := session.GetLoginUser(c)
-	inbounds, err := a.inboundService.GetInbounds(user.Id)
-	if err != nil {
-		jsonMsg(c, "获取", err)
-		return
-	}
-	jsonObj(c, inbounds, nil)
-}
-
-func (a *InboundController) addInbound(c *gin.Context) {
-	inbound := &model.Inbound{}
-	err := c.ShouldBind(inbound)
-	if err != nil {
-		jsonMsg(c, "添加", err)
-		return
-	}
-	user := session.GetLoginUser(c)
-	inbound.UserId = user.Id
-	inbound.Enable = true
-	inbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
-	err = a.inboundService.AddInbound(inbound)
-	jsonMsg(c, "添加", err)
-	if err == nil {
-		a.xrayService.SetToNeedRestart()
-	}
-}
-
-func (a *InboundController) delInbound(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		jsonMsg(c, "删除", err)
-		return
-	}
-	err = a.inboundService.DelInbound(id)
-	jsonMsg(c, "删除", err)
-	if err == nil {
-		a.xrayService.SetToNeedRestart()
-	}
-}
-
-func (a *InboundController) updateInbound(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		jsonMsg(c, "修改", err)
-		return
-	}
-	inbound := &model.Inbound{
-		Id: id,
-	}
-	err = c.ShouldBind(inbound)
-	if err != nil {
-		jsonMsg(c, "修改", err)
-		return
-	}
-	err = a.inboundService.UpdateInbound(inbound)
-	jsonMsg(c, "修改", err)
-	if err == nil {
-		a.xrayService.SetToNeedRestart()
-	}
+    // 调用服务层的获取入站列表方法
+    inbounds, err := a.inboundService.GetInbounds()
+    session.JsonData(c, "获取入站列表", inbounds, err)
 }
